@@ -19,18 +19,30 @@ The model is similar to modern email providers: IMAP remains the source protocol
 
 The sync engine (`sync-engine/`) is a Node.js/TypeScript service that:
 
-1. **Connects to local Dovecot** via IMAP on localhost.
+1. **Connects to the configured upstream IMAP server**.
+   In `local` mode that upstream is Homerow's bundled Dovecot service.
+   In `external` mode it is your existing provider.
 2. **Backfills** the entire mailbox history on first run (`backfill.ts`).
 3. **Listens for changes** in real-time via IMAP IDLE (`idle-listener.ts`).
 4. **Parses and sanitizes** email content, extracting HTML/plain text and attachment metadata (`parser.ts`).
 5. **Groups messages into threads** using In-Reply-To and References headers (`threading.ts`).
 6. **Writes to PostgreSQL** with indexed columns for fast queries (`db.ts`).
+7. **Exposes a localhost-only internal API** used by webmail for send, append, move, delete, and flag operations against the upstream mailbox.
+
+## What It Is Not
+
+The sync engine **consumes** IMAP, but it is **not** an IMAP server.
+
+- In `local` mode, third-party mail clients can connect to Homerow's bundled Dovecot service.
+- In `external` mode, third-party mail clients must connect to the external provider directly.
+
+Homerow does not currently provide a generic multi-user IMAP service of its own.
 
 ## Database Schema
 
 The PostgreSQL database has four core tables:
 
-- **`accounts`** — IMAP/SMTP credentials and settings.
+- **`accounts`** — Mailbox identity, IMAP/SMTP auth usernames, credentials, and provider settings.
 - **`folders`** — Mailbox structure (INBOX, Sent, Drafts, etc.) with UIDVALIDITY tracking and sync state.
 - **`messages`** — Individual emails with parsed content, flags, labels, spam scores, and attachment metadata.
 - **`threads`** — Conversation grouping with unread counts, snippets, and participant lists.
@@ -43,3 +55,7 @@ Search uses trigram indexes for fast `ILIKE` text queries.
 - **Incremental sync** — only fetches new or changed messages using IMAP UIDs.
 - **Real-time updates** — IMAP IDLE listener triggers immediate sync on new mail arrival.
 - **UID validity tracking** — handles IMAP UID resets gracefully (`uid-validity.ts`).
+
+## Current Scope
+
+Today the deployment boots one configured mailbox account per environment. External-provider mode changes where that mailbox syncs from, but it does not yet turn Homerow into a hosted multi-account mail service.

@@ -27,7 +27,7 @@ Terraform is split by service category so each stack only initializes the provid
 
 1. **Set up remote state bucket** — creates or reuses the Terraform state bucket.
 2. **Apply VPS stack** — provisions the server, reads `server_ip`.
-3. **Apply DNS stack** — creates A, MX, SPF, DMARC records using `mail_server_ipv4=server_ip`.
+3. **Apply DNS stack** — always creates the webmail A record, and optionally creates mail-related DNS records when `MANAGE_MAIL_DNS=true`.
 4. **Apply Storage stack** — creates backup bucket, reads `s3_bucket_url`.
 5. **Deploy NixOS** — bootstraps or updates the server configuration.
 
@@ -35,20 +35,36 @@ Terraform is split by service category so each stack only initializes the provid
 
 On the **infrastructure** side:
 
-- One VPS (mail host)
-- DNS records for `mail.<domain>`, `webmail.<domain>`, `rspamd.<domain>`
+- One VPS (Homerow host)
+- DNS record for `WEBMAIL_SUBDOMAIN.<domain>`
+- Optional mail DNS records for `mail.<domain>`, `rspamd.<domain>`, MX, SPF, and DMARC when `MANAGE_MAIL_DNS=true`
 - One object storage bucket for backups
 
 On the **server** side (NixOS):
 
-- Postfix + Dovecot mail services
 - ACME/Let's Encrypt certificates
-- Rspamd spam filtering + web UI
 - nginx reverse proxy and TLS termination
 - PostgreSQL database
 - Sync engine service
 - Webmail service
 - Scheduled encrypted restic backups
+
+In `MAIL_PROVIDER_MODE=local`, the server also runs:
+
+- Postfix + Dovecot mail services
+- Rspamd spam filtering + web UI
+
+In `MAIL_PROVIDER_MODE=external`, the server skips the bundled mail stack and Homerow connects to the configured upstream IMAP/SMTP provider instead.
+
+## DNS Scope
+
+The current Cloudflare DNS stack manages the baseline records needed for Homerow routing and basic local-mode mail delivery:
+
+- `WEBMAIL_SUBDOMAIN.<domain>` A record
+- Optional `mail.<domain>` and `rspamd.<domain>` A records
+- Optional MX, SPF, and DMARC records
+
+It does **not** currently model every deliverability-related TXT record. If you use the bundled local mail stack, records such as DKIM selectors or HELO-specific SPF TXT entries may still need to be managed separately.
 
 ## Selecting Stacks
 

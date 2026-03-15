@@ -5,6 +5,8 @@ description: Post-deploy steps for Hetzner Cloud to ensure mail deliverability.
 
 import { Steps } from '@astrojs/starlight/components';
 
+This guide applies to the bundled local mail stack (`MAIL_PROVIDER_MODE=local`). If you are using an external SMTP provider, follow that provider's deliverability guidance instead.
+
 If you deploy on Hetzner Cloud, you may hit two common issues before outbound mail is fully reliable:
 
 1. Outbound SMTP ports `25` and `465` are blocked by default.

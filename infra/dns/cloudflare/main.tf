@@ -14,6 +14,7 @@ provider "cloudflare" {
 }
 
 resource "cloudflare_record" "mail_a" {
+  count   = var.manage_mail_dns ? 1 : 0
   zone_id = var.cloudflare_zone_id
   name    = "mail"
   content = var.mail_server_ipv4
@@ -32,6 +33,7 @@ resource "cloudflare_record" "webmail_a" {
 }
 
 resource "cloudflare_record" "rspamd_a" {
+  count   = var.manage_mail_dns ? 1 : 0
   zone_id = var.cloudflare_zone_id
   name    = "rspamd"
   content = var.mail_server_ipv4
@@ -41,6 +43,7 @@ resource "cloudflare_record" "rspamd_a" {
 }
 
 resource "cloudflare_record" "mx" {
+  count    = var.manage_mail_dns ? 1 : 0
   zone_id  = var.cloudflare_zone_id
   name     = "@"
   content  = "mail.${var.domain}"
@@ -50,6 +53,7 @@ resource "cloudflare_record" "mx" {
 }
 
 resource "cloudflare_record" "spf" {
+  count   = var.manage_mail_dns ? 1 : 0
   zone_id = var.cloudflare_zone_id
   name    = "@"
   content = "v=spf1 mx a:mail.${var.domain} -all"
@@ -58,6 +62,7 @@ resource "cloudflare_record" "spf" {
 }
 
 resource "cloudflare_record" "dmarc" {
+  count   = var.manage_mail_dns ? 1 : 0
   zone_id = var.cloudflare_zone_id
   name    = "_dmarc"
   content = "v=DMARC1; p=quarantine; rua=mailto:admin@${var.domain}"
@@ -105,4 +110,9 @@ variable "webmail_subdomain" {
     condition     = lower(trimspace(var.webmail_subdomain)) != "mail"
     error_message = "webmail_subdomain must not be 'mail' to avoid mail host overlap."
   }
+}
+
+variable "manage_mail_dns" {
+  type    = bool
+  default = true
 }

@@ -42,7 +42,10 @@ async function seedSmtpMessages({ email, password, count }) {
     host: smtpHost(),
     port: smtpPort(),
     secure: smtpPort() === 465,
-    auth: { user: email, pass: password },
+    auth: {
+      user: process.env.E2E_SMTP_USER || email,
+      pass: process.env.E2E_SMTP_PASSWORD || password,
+    },
     tls: { rejectUnauthorized: false },
   });
 

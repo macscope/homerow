@@ -182,7 +182,6 @@ export default function Sidebar() {
         <div class="flex flex-col">
           <A
             href="/"
-            onClick={() => handleFolderClick(undefined)}
             class={`flex items-center gap-2 px-4 ${density().sidebarPy} rounded-xl transition-all duration-150 ${density().fontSize} font-medium no-underline ${
               isInboxActive()
                 ? "bg-[var(--active-bg)] text-[var(--primary)] font-semibold"
@@ -224,7 +223,6 @@ export default function Sidebar() {
                   return (
                     <A
                       href={`/?filter=${encodeURIComponent(tab.filterId)}`}
-                      onClick={() => setActiveFilter(tab.filterId)}
                       class={`flex items-center gap-2 px-3 ${density().sidebarPy} rounded-lg ${density().fontSize} font-medium no-underline ${
                         isCategoryActive(tab.filterId)
                           ? "bg-[var(--active-bg)] text-[var(--primary)] font-semibold"
@@ -244,7 +242,7 @@ export default function Sidebar() {
         {foldersBeforeSent.map((f) => (
           <A
             href={f.path}
-            onClick={() => handleFolderClick(f.filter)}
+            onClick={f.filter ? undefined : () => handleFolderClick(undefined)}
             class={`flex items-center gap-3 px-4 ${density().sidebarPy} rounded-xl transition-all duration-150 ${density().fontSize} font-medium no-underline ${
               isActive(f.path, f.filter)
                 ? "bg-[var(--active-bg)] text-[var(--primary)] font-semibold"
@@ -381,7 +379,6 @@ export default function Sidebar() {
           {(label) => (
             <A
               href={`/?filter=label:${label.id}`}
-              onClick={() => setActiveFilter(label.id)}
               class={`flex items-center gap-3 px-4 ${density().sidebarPy} rounded-xl ${density().fontSize} font-medium transition-colors no-underline cursor-pointer ${
                 isLabelActive(label.id)
                   ? "bg-[var(--active-bg)] text-[var(--primary)] font-semibold"

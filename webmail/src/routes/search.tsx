@@ -15,7 +15,7 @@ import {
 import EmailRow from "~/components/EmailRow";
 import ReadingPane from "~/components/ReadingPane";
 import { IconSearch, IconRefresh, IconBack } from "~/components/Icons";
-import { IMPORTANT_LABEL_NAME, setActiveFilter } from "~/lib/labels-store";
+import { IMPORTANT_LABEL_NAME } from "~/lib/labels-store";
 import { showToast } from "~/lib/toast-store";
 import { openCompose, composeState, closeCompose, toggleFullscreen, toggleMinimize, saveComposeDraftNow } from "~/lib/compose-store";
 import { formatForwardSubject, formatReplySubject, getForwardQuoteParts, getReplyAllRecipients, getReplyQuoteParts, getReplyRecipients } from "~/lib/reply-utils";
@@ -58,7 +58,6 @@ export default function SearchView() {
     `${email.folderPath || "INBOX"}#${email.seq}`;
 
   const clearSearchAndGoInbox = () => {
-    setActiveFilter(undefined);
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("webmail-clear-search-input"));
     }

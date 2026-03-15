@@ -8,6 +8,7 @@ TMP_DIR="$(mktemp -d)"
 VPS_DIR="${TMP_DIR}/vps/hetzner"
 DNS_DIR="${TMP_DIR}/dns/cloudflare"
 STORAGE_DIR="${TMP_DIR}/storage/hetzner-object-storage"
+SSH_PUB_KEY="${TMP_DIR}/id_ed25519.pub"
 
 VALID_HCLOUD_TOKEN="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 VALID_CLOUDFLARE_TOKEN="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -19,17 +20,22 @@ MISSING_S3_LOG="$(mktemp)"
 INVALID_WEBMAIL_SUBDOMAIN_LOG="$(mktemp)"
 EXISTING_SSH_KEY_PLAN_LOG="$(mktemp)"
 EXISTING_SERVER_PLAN_LOG="$(mktemp)"
-trap 'rm -rf "${TMP_DIR}"; rm -f "${MISSING_HCLOUD_LOG}" "${MISSING_CF_LOG}" "${MISSING_S3_LOG}" "${INVALID_WEBMAIL_SUBDOMAIN_LOG}" "${EXISTING_SSH_KEY_PLAN_LOG}" "${EXISTING_SERVER_PLAN_LOG}"' EXIT
+EXTERNAL_DNS_PLAN_LOG="$(mktemp)"
+trap 'rm -rf "${TMP_DIR}"; rm -f "${MISSING_HCLOUD_LOG}" "${MISSING_CF_LOG}" "${MISSING_S3_LOG}" "${INVALID_WEBMAIL_SUBDOMAIN_LOG}" "${EXISTING_SSH_KEY_PLAN_LOG}" "${EXISTING_SERVER_PLAN_LOG}" "${EXTERNAL_DNS_PLAN_LOG}"' EXIT
 
 mkdir -p "${TMP_DIR}/vps" "${TMP_DIR}/dns" "${TMP_DIR}/storage"
 cp -R "${INFRA_DIR}/vps/hetzner" "${TMP_DIR}/vps/"
 cp -R "${INFRA_DIR}/dns/cloudflare" "${TMP_DIR}/dns/"
 cp -R "${INFRA_DIR}/storage/hetzner-object-storage" "${TMP_DIR}/storage/"
+cat > "${SSH_PUB_KEY}" <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG7K8bAxY3QK2l4LJw0Xl6p0B9n5q2wJb5n5p6m7n8o9 test@example
+EOF
 
 # Backend behavior is validated in dedicated install tests; provider tests run without remote backends.
-sed -i '' '/backend "s3" {}/d' "${VPS_DIR}/main.tf"
-sed -i '' '/backend "s3" {}/d' "${DNS_DIR}/main.tf"
-sed -i '' '/backend "s3" {}/d' "${STORAGE_DIR}/main.tf"
+sed -i.bak '/backend "s3" {}/d' "${VPS_DIR}/main.tf"
+sed -i.bak '/backend "s3" {}/d' "${DNS_DIR}/main.tf"
+sed -i.bak '/backend "s3" {}/d' "${STORAGE_DIR}/main.tf"
+rm -f "${VPS_DIR}/main.tf.bak" "${DNS_DIR}/main.tf.bak" "${STORAGE_DIR}/main.tf.bak"
 find "${TMP_DIR}" -name '.terraform' -type d -prune -exec rm -rf {} +
 find "${TMP_DIR}" -name '.terraform.lock.hcl' -type f -delete
 find "${TMP_DIR}" -name '*.tfstate' -type f -delete
@@ -53,7 +59,7 @@ terraform -chdir="${VPS_DIR}" plan \
   -var="hcloud_token=${VALID_HCLOUD_TOKEN}" \
   -var='server_type=cx23' \
   -var='location=nbg1' \
-  -var="ssh_public_key_path=${ROOT_DIR}/infra/id_ed25519.pub" >/dev/null
+  -var="ssh_public_key_path=${SSH_PUB_KEY}" >/dev/null
 
 terraform -chdir="${VPS_DIR}" plan \
   -input=false \
@@ -64,7 +70,7 @@ terraform -chdir="${VPS_DIR}" plan \
   -var="hcloud_token=${VALID_HCLOUD_TOKEN}" \
   -var='server_type=cx23' \
   -var='location=nbg1' \
-  -var="ssh_public_key_path=${ROOT_DIR}/infra/id_ed25519.pub" \
+  -var="ssh_public_key_path=${SSH_PUB_KEY}" \
   -var='existing_ssh_key_id=12345' >"${EXISTING_SSH_KEY_PLAN_LOG}"
 if grep -q "hcloud_ssh_key.admin" "${EXISTING_SSH_KEY_PLAN_LOG}"; then
   echo "expected vps plan to skip hcloud_ssh_key resource when existing_ssh_key_id is provided" >&2
@@ -78,7 +84,7 @@ terraform -chdir="${VPS_DIR}" plan \
   -no-color \
   -var='domain=example.com' \
   -var="hcloud_token=${VALID_HCLOUD_TOKEN}" \
-  -var='ssh_public_key_path='"${ROOT_DIR}/infra/id_ed25519.pub" \
+  -var='ssh_public_key_path='"${SSH_PUB_KEY}" \
   -var='existing_server_id=99999' \
   -var='existing_server_ipv4=203.0.113.10' >"${EXISTING_SERVER_PLAN_LOG}"
 if grep -q "hcloud_server.mail" "${EXISTING_SERVER_PLAN_LOG}" || grep -q "hcloud_rdns.mail_ptr" "${EXISTING_SERVER_PLAN_LOG}" || grep -q "hcloud_ssh_key.admin" "${EXISTING_SERVER_PLAN_LOG}"; then
@@ -93,7 +99,7 @@ if terraform -chdir="${VPS_DIR}" plan \
   -no-color \
   -var='domain=example.com' \
   -var='hcloud_token=' \
-  -var='ssh_public_key_path='"${ROOT_DIR}/infra/id_ed25519.pub" >"${MISSING_HCLOUD_LOG}" 2>&1; then
+  -var='ssh_public_key_path='"${SSH_PUB_KEY}" >"${MISSING_HCLOUD_LOG}" 2>&1; then
   echo "expected vps plan failure when hcloud_token is missing" >&2
   exit 1
 fi
@@ -109,6 +115,23 @@ terraform -chdir="${DNS_DIR}" plan \
   -var="cloudflare_zone_id=${VALID_CLOUDFLARE_ZONE_ID}" \
   -var='webmail_subdomain=webmail' \
   -var='mail_server_ipv4=203.0.113.10' >/dev/null
+
+terraform -chdir="${DNS_DIR}" plan \
+  -input=false \
+  -refresh=false \
+  -lock=false \
+  -no-color \
+  -var='domain=example.com' \
+  -var="cloudflare_token=${VALID_CLOUDFLARE_TOKEN}" \
+  -var="cloudflare_zone_id=${VALID_CLOUDFLARE_ZONE_ID}" \
+  -var='webmail_subdomain=webmail' \
+  -var='manage_mail_dns=false' \
+  -var='mail_server_ipv4=203.0.113.10' >"${EXTERNAL_DNS_PLAN_LOG}"
+if grep -q "cloudflare_record.mail_a" "${EXTERNAL_DNS_PLAN_LOG}" || grep -q "cloudflare_record.rspamd_a" "${EXTERNAL_DNS_PLAN_LOG}" || grep -q "cloudflare_record.mx" "${EXTERNAL_DNS_PLAN_LOG}" || grep -q "cloudflare_record.spf" "${EXTERNAL_DNS_PLAN_LOG}" || grep -q "cloudflare_record.dmarc" "${EXTERNAL_DNS_PLAN_LOG}"; then
+  echo "expected dns plan to skip mail-specific records when manage_mail_dns is false" >&2
+  exit 1
+fi
+grep -q "cloudflare_record.webmail_a" "${EXTERNAL_DNS_PLAN_LOG}"
 
 if terraform -chdir="${DNS_DIR}" plan \
   -input=false \

@@ -3,7 +3,6 @@ import { useNavigate } from "@solidjs/router";
 import { IconSearch, IconSettings, IconChevronLeft, IconChevronRight, IconChevronDown, IconSlidersHorizontal, IconClose, IconGithub } from "./Icons";
 import { authClient } from "~/lib/auth-client";
 import { toggleCommandPalette } from "~/lib/command-palette-store";
-import { setActiveFilter } from "~/lib/labels-store";
 import { formatShortcut, getActionShortcutHint, getPreferredActionShortcut } from "~/lib/keyboard-shortcuts-store";
 import type { UpdateStatusPayload } from "~/lib/update-status-types";
 
@@ -55,7 +54,6 @@ export default function Header(props: HeaderProps) {
     if (e.key === "Backspace" && !props.searchTerm().trim()) {
       e.preventDefault();
       props.setSearchTerm("");
-      setActiveFilter(undefined);
       navigate("/");
       return;
     }
@@ -214,7 +212,6 @@ export default function Header(props: HeaderProps) {
           title={`Go to Inbox${getActionShortcutHint("gotoInbox")}`}
           aria-label="Go to Inbox"
           onClick={() => {
-            setActiveFilter(undefined);
             navigate("/");
           }}
         >

@@ -3,10 +3,30 @@ let
   settings = import ./settings.nix;
   dbPassword = settings.imapPassword;
   dbPasswordSql = lib.replaceStrings [ "'" ] [ "''" ] dbPassword;
+  mailProviderMode = settings.mailProviderMode or "local";
+  upstreamImapHost = settings.upstreamImapHost or "127.0.0.1";
+  upstreamImapPort = settings.upstreamImapPort or 993;
+  upstreamImapTls = settings.upstreamImapTls or true;
+  upstreamImapUser = settings.upstreamImapUser or settings.email;
+  upstreamImapPassword = settings.upstreamImapPassword or settings.imapPassword;
+  upstreamSmtpHost = settings.upstreamSmtpHost or "127.0.0.1";
+  upstreamSmtpPort = settings.upstreamSmtpPort or 465;
+  upstreamSmtpSecure = settings.upstreamSmtpSecure or true;
+  upstreamSmtpUser = settings.upstreamSmtpUser or settings.email;
+  upstreamSmtpPassword = settings.upstreamSmtpPassword or settings.imapPassword;
+  emailSql = lib.replaceStrings [ "'" ] [ "''" ] settings.email;
+  upstreamImapHostSql = lib.replaceStrings [ "'" ] [ "''" ] upstreamImapHost;
+  upstreamImapUserSql = lib.replaceStrings [ "'" ] [ "''" ] upstreamImapUser;
+  upstreamImapPasswordSql = lib.replaceStrings [ "'" ] [ "''" ] upstreamImapPassword;
+  upstreamSmtpHostSql = lib.replaceStrings [ "'" ] [ "''" ] upstreamSmtpHost;
+  syncEngineApiHost = "127.0.0.1";
+  syncEngineApiPort = 4001;
 
   syncEngineEnvFile = pkgs.writeText "sync-engine.env" ''
     DB_PASSWORD=${dbPassword}
-    IMAP_PASS=${settings.imapPassword}
+    IMAP_PASS=${upstreamImapPassword}
+    SMTP_PASS=${upstreamSmtpPassword}
+    SYNC_ENGINE_API_TOKEN=${settings.imapPassword}
   '';
 
   syncEngineApp = pkgs.buildNpmPackage {
@@ -98,7 +118,7 @@ in {
 
         # 4. Seed Admin
         echo "Seeding admin account..."
-        psql -d mailsync -c "INSERT INTO accounts (email, imap_host, smtp_host, username, password) VALUES ('${settings.email}', '127.0.0.1', '127.0.0.1', '${settings.email}', '${settings.imapPassword}') ON CONFLICT (email) DO NOTHING;"
+        psql -d mailsync -c "INSERT INTO accounts (email, imap_host, imap_port, imap_tls, smtp_host, smtp_port, username, password) VALUES ('${emailSql}', '${upstreamImapHostSql}', ${toString upstreamImapPort}, ${if upstreamImapTls then "true" else "false"}, '${upstreamSmtpHostSql}', ${toString upstreamSmtpPort}, '${upstreamImapUserSql}', '${upstreamImapPasswordSql}') ON CONFLICT (email) DO UPDATE SET imap_host = EXCLUDED.imap_host, imap_port = EXCLUDED.imap_port, imap_tls = EXCLUDED.imap_tls, smtp_host = EXCLUDED.smtp_host, smtp_port = EXCLUDED.smtp_port, username = EXCLUDED.username, password = EXCLUDED.password, updated_at = now();"
       '';
     };
   };
@@ -106,7 +126,7 @@ in {
   systemd.services.mail-sync-engine = {
     description = "Mail Sync Engine";
     wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" "postgresql.service" "dovecot.service" "sync-engine-db-init.service" ];
+    after = [ "network.target" "postgresql.service" "sync-engine-db-init.service" ] ++ lib.optionals (mailProviderMode == "local") [ "dovecot.service" ];
     requires = [ "postgresql.service" "sync-engine-db-init.service" ];
 
     environment = {
@@ -116,13 +136,17 @@ in {
       DB_NAME = "mailsync";
       DB_USER = "mailsync";
       ATTACHMENT_DIR = "/var/lib/mail-sync-engine/attachments";
-      IMAP_HOST = "127.0.0.1";
-      IMAP_PORT = "993";
-      IMAP_TLS = "true";
-      IMAP_USER = settings.email;
-      SMTP_HOST = "127.0.0.1";
-      SMTP_PORT = "465"; 
-      SMTP_SECURE = "true";
+      ACCOUNT_EMAIL = settings.email;
+      IMAP_HOST = upstreamImapHost;
+      IMAP_PORT = toString upstreamImapPort;
+      IMAP_TLS = lib.boolToString upstreamImapTls;
+      IMAP_USER = upstreamImapUser;
+      SYNC_ENGINE_API_HOST = syncEngineApiHost;
+      SYNC_ENGINE_API_PORT = toString syncEngineApiPort;
+      SMTP_HOST = upstreamSmtpHost;
+      SMTP_PORT = toString upstreamSmtpPort;
+      SMTP_SECURE = lib.boolToString upstreamSmtpSecure;
+      SMTP_USER = upstreamSmtpUser;
     };
 
     serviceConfig = {

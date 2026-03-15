@@ -18,6 +18,8 @@ All configuration lives in `config.env` at the repository root. This file is nev
 | `SSH_PRIVATE_KEY_PATH` | No | Local private key path used by deploy helpers | — |
 | `ACME_ENV` | No | Certificate environment | `production` |
 | `WEBMAIL_SUBDOMAIN` | No | Webmail host subdomain (must not be `mail`) | `webmail` |
+| `MAIL_PROVIDER_MODE` | No | Use Homerow's local mail stack or an external IMAP/SMTP provider | `local` |
+| `MANAGE_MAIL_DNS` | No | Manage `mail`, MX, SPF, and `rspamd` DNS records in Cloudflare | `true` in `local` mode, `false` in `external` mode |
 | `VPS_STACK` | No | VPS provider stack selector | `hetzner` |
 | `DNS_STACK` | No | DNS provider stack selector | `cloudflare` |
 | `STORAGE_STACK` | No | Storage provider stack selector | `hetzner-object-storage` |
@@ -47,6 +49,25 @@ These are required only for the selected provider stacks.
 |----------|----------|---------|
 | `CLOUDFLARE_TOKEN` | Yes | Cloudflare API token |
 | `CLOUDFLARE_ZONE_ID` | Yes | Zone ID for your domain |
+
+## External Provider Mode
+
+Set `MAIL_PROVIDER_MODE=external` when you want Homerow to run only `webmail` + `sync-engine` and connect to an existing mailbox provider.
+
+| Variable | Required in `external` mode | Purpose | Default |
+|----------|-----------------------------|---------|---------|
+| `UPSTREAM_IMAP_HOST` | Yes | IMAP server hostname | — |
+| `UPSTREAM_IMAP_PORT` | No | IMAP server port | `993` |
+| `UPSTREAM_IMAP_TLS` | No | Use TLS for IMAP | `true` |
+| `UPSTREAM_IMAP_USER` | No | IMAP username | `EMAIL` |
+| `UPSTREAM_IMAP_PASSWORD` | No | IMAP password / app password | `MAIL_PASSWORD` |
+| `UPSTREAM_SMTP_HOST` | Yes | SMTP server hostname | — |
+| `UPSTREAM_SMTP_PORT` | No | SMTP server port | `587` |
+| `UPSTREAM_SMTP_SECURE` | No | Use implicit TLS for SMTP | `false` |
+| `UPSTREAM_SMTP_USER` | No | SMTP username | `UPSTREAM_IMAP_USER` |
+| `UPSTREAM_SMTP_PASSWORD` | No | SMTP password / app password | `UPSTREAM_IMAP_PASSWORD` |
+
+`MAIL_PASSWORD` still controls the Homerow webmail login and internal bootstrap password. Override the `UPSTREAM_*_PASSWORD` values when your external provider uses different credentials.
 
 ### Storage (`hetzner-object-storage`)
 
@@ -82,6 +103,25 @@ HETZNER_LOCATION=nbg1
 HETZNER_REUSE_EXISTING_SERVER=true
 HETZNER_OBJECT_STORAGE_LOCATION=nbg1
 
+```
+
+Example `external` mode:
+
+```bash
+MAIL_PROVIDER_MODE=external
+MANAGE_MAIL_DNS=false
+
+UPSTREAM_IMAP_HOST=imap.fastmail.com
+UPSTREAM_IMAP_PORT=993
+UPSTREAM_IMAP_TLS=true
+UPSTREAM_IMAP_USER=admin@example.com
+UPSTREAM_IMAP_PASSWORD=app-password
+
+UPSTREAM_SMTP_HOST=smtp.fastmail.com
+UPSTREAM_SMTP_PORT=465
+UPSTREAM_SMTP_SECURE=true
+UPSTREAM_SMTP_USER=admin@example.com
+UPSTREAM_SMTP_PASSWORD=app-password
 ```
 
 ## Advanced

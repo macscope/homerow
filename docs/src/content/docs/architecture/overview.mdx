@@ -1,6 +1,6 @@
 ---
 title: Architecture Overview
-description: How the five components of the mail stack work together.
+description: How Homerow runs with either the bundled mail stack or an external IMAP/SMTP provider.
 ---
 
 ## Components
@@ -13,29 +13,41 @@ The stack has five layers:
 4. **Web interface** (`webmail/`) — SolidStart frontend/backend for email workflows.
 5. **Deploy orchestration** (`scripts/`) — installation and deployment automation.
 
+## Deployment Modes
+
+Homerow currently supports one configured mailbox per deployment. That mailbox can run in one of two modes:
+
+- **`MAIL_PROVIDER_MODE=local`** — Homerow runs its bundled Postfix + Dovecot stack and the sync engine connects to that local mailbox.
+- **`MAIL_PROVIDER_MODE=external`** — Homerow runs `webmail` + `sync-engine` and connects to an existing upstream IMAP/SMTP provider.
+
+In both modes, the web UI reads mailbox state from PostgreSQL. The sync engine remains the component that talks to IMAP, and webmail write operations flow through the sync engine's internal API instead of opening IMAP/SMTP connections directly.
+
 ## Architecture Diagram
 
 ```mermaid
 flowchart LR
   U["User Browser"] --> W["UI (HTTPS)"]
-  DNS["DNS Provider (zone: <domain>)"] -- "A + MX records" --> M["mail.<domain>"]
-  DNS -- "A record" --> WM["WEBMAIL_SUBDOMAIN.<domain>"]
-  DNS -- "A record" --> R["rspamd.<domain>"]
+  C["Any IMAP client"] -. "Uses the configured IMAP provider" .-> UP["Configured IMAP/SMTP upstream"]
+  DNS["DNS Provider (zone: <domain>)"] -- "A record" --> WM["WEBMAIL_SUBDOMAIN.<domain>"]
+  DNS -. "Optional mail DNS in local mode" .-> M["mail.<domain>"]
+  DNS -. "Optional rspamd DNS in local mode" .-> R["rspamd.<domain>"]
 
   subgraph VPS["VPS (NixOS Host)"]
     NG["nginx + TLS (ACME)"]
-    WMAPP["Custom UI Service"]
+    WMAPP["Webmail"]
+    API["Sync Engine Internal API (:4001)"]
     SYNC["Sync Engine"]
     PG["PostgreSQL"]
-    IMAPSMTP["Postfix + Dovecot (IMAP/SMTP)"]
-    RSPAMD["Rspamd"]
+    LOCALMAIL["Postfix + Dovecot (local mode only)"]
+    RSPAMD["Rspamd (local mode only)"]
   end
 
   W --> NG --> WMAPP
   WMAPP --> PG
+  WMAPP --> API --> SYNC
   SYNC --> PG
-  SYNC <--> IMAPSMTP
-  WMAPP --> IMAPSMTP
+  SYNC <--> UP
+  LOCALMAIL -. "Acts as upstream in local mode" .-> UP
   NG --> RSPAMD
 
   B["Object Storage (Backups)"] <-- "restic" --> VPS
@@ -45,12 +57,15 @@ flowchart LR
 
 | Service | Port | Protocol | Access | Purpose |
 |---------|------|----------|--------|---------|
-| Postfix (SMTP) | 465 | TLS | Mail clients | Send outgoing mail |
-| Dovecot (IMAP) | 993 | TLS | Mail clients / sync-engine | Receive/store mail |
-| Webmail | 3000 | HTTP | localhost (nginx proxy) | Web UI backend |
+| Webmail | 3001, 3002 | HTTP | localhost (nginx proxy) | Blue/green web UI backends |
+| Sync engine internal API | 4001 | HTTP | localhost | Webmail write-path bridge to upstream mail actions |
 | nginx | 80, 443 | HTTP/HTTPS | Public | Reverse proxy, TLS termination |
-| Rspamd UI | Unix socket | HTTP | nginx proxy | Spam filter admin panel |
 | PostgreSQL | 5432 | TCP | localhost | Mail index database |
+| Postfix (SMTP) | 465 | TLS | Mail clients | Local-mode outgoing mail service |
+| Dovecot (IMAP) | 993 | TLS | Mail clients / sync-engine | Local-mode IMAP service |
+| Rspamd UI | Unix socket | HTTP | nginx proxy | Local-mode spam filter admin panel |
+
+In `external` mode, Homerow does **not** expose its own IMAP server for third-party clients. Users connect their mail client directly to the external provider's IMAP endpoint.
 
 ## NixOS Modules
 
@@ -58,8 +73,8 @@ Each module in `modules/` configures one aspect of the system:
 
 - **`configuration.nix`** — Boot loader, networking, SSH access, firewall rules, Nix store optimization.
 - **`disk-config.nix`** — GPT partitioning via Disko (boot + root partitions).
-- **`mail.nix`** — Postfix, Dovecot, Rspamd, ACME/TLS certificates, nginx for Rspamd UI.
+- **`mail.nix`** — Optional local-mode mail stack: Postfix, Dovecot, Rspamd, ACME/TLS certificates, nginx for the Rspamd UI.
 - **`backup.nix`** — Restic encrypted backups to S3 with daily schedule and retention policies.
-- **`sync-engine.nix`** — PostgreSQL setup, sync engine systemd service, database schema initialization.
-- **`webmail.nix`** — SolidStart app as systemd service, nginx reverse proxy with ACME.
+- **`sync-engine.nix`** — PostgreSQL setup, sync engine systemd service, internal API, database schema initialization.
+- **`webmail.nix`** — SolidStart app as systemd service, nginx reverse proxy with ACME, upstream IMAP/SMTP runtime configuration.
 - **`settings.nix`** — Runtime settings generated from deploy configuration.

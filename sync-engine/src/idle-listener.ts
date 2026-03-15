@@ -591,7 +591,7 @@ export class IdleListener {
         `SELECT enabled, subject, body_html, body_text, start_date, end_date
          FROM auto_reply_settings
          WHERE account_email = $1`,
-        [this.config.imap.user],
+        [this.config.account.email],
       );
 
       if (!settings?.enabled) return;
@@ -614,7 +614,7 @@ export class IdleListener {
       if (!fromAddress) return;
 
       // Don't reply to self
-      if (fromAddress.toLowerCase() === this.config.imap.user.toLowerCase()) return;
+      if (fromAddress.toLowerCase() === this.config.account.email.toLowerCase()) return;
 
       // Don't reply to auto-replies (RFC 3834 / common headers)
       const headers = parsed.headers as Record<string, string | string[]>;
@@ -637,7 +637,7 @@ export class IdleListener {
          WHERE account_email = $1
            AND lower(sender_email) = lower($2)
            AND sent_at >= $3::date`,
-        [this.config.imap.user, fromAddress, dedupStart],
+        [this.config.account.email, fromAddress, dedupStart],
       );
       if (recent) return;
 
@@ -645,7 +645,7 @@ export class IdleListener {
       const transporter = nodemailer.createTransport({
         host: this.config.smtp.host,
         port: this.config.smtp.port,
-        secure: this.config.smtp.port === 465,
+        secure: this.config.smtp.secure,
         auth: { user: this.config.smtp.user, pass: this.config.smtp.pass },
         tls: { rejectUnauthorized: false },
       });
@@ -656,12 +656,12 @@ export class IdleListener {
       const originalMessageId = typeof parsed.messageId === 'string' ? parsed.messageId : undefined;
       const bodyHtml = settings.body_html || '';
       const { html: normalizedBodyHtml, inlineAttachments } = bodyHtml.trim()
-        ? extractInlineDataImageAttachmentsForAutoReply(bodyHtml, this.config.imap.user)
+        ? extractInlineDataImageAttachmentsForAutoReply(bodyHtml, this.config.account.email)
         : { html: bodyHtml, inlineAttachments: [] as AutoReplyInlineAttachment[] };
       const bodyText = settings.body_text || normalizedBodyHtml.replace(/<[^>]+>/g, '') || '';
 
       await transporter.sendMail({
-        from: this.config.imap.user,
+        from: this.config.account.email,
         to: fromAddress,
         subject: replySubject,
         text: bodyText,
@@ -677,7 +677,7 @@ export class IdleListener {
       // Record sent auto-reply to avoid duplicates
       await query(
         `INSERT INTO auto_reply_sent (account_email, sender_email) VALUES ($1, lower($2))`,
-        [this.config.imap.user, fromAddress],
+        [this.config.account.email, fromAddress],
       );
 
       log.info('Auto-reply sent', { to: fromAddress, subject: replySubject });

@@ -162,6 +162,29 @@ test.describe("Category regressions", () => {
     }
   });
 
+  test("rapid sidebar category clicks do not strand the final category in loading state", async ({ page }) => {
+    const categoryLinks = page.locator('a[href*="filter=category%3A"]');
+    const count = await categoryLinks.count();
+    test.skip(count < 2, "Need at least two configured categories");
+
+    const first = categoryLinks.nth(0);
+    const second = categoryLinks.nth(1);
+    const secondName = (await second.innerText()).trim();
+    expect(secondName.length).toBeGreaterThan(0);
+
+    for (let i = 0; i < 4; i += 1) {
+      await first.click();
+      await second.click();
+    }
+
+    await expect(page).toHaveURL(/filter=category%3A/i);
+    await expect(page.getByRole("heading", { name: secondName, exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".skeleton")).toHaveCount(0);
+
+    const displayedTotal = await getDisplayedRangeTotal(await getRangeLocator(page));
+    expect(displayedTotal).not.toBeNull();
+  });
+
   test("dragging email row to a category via real mouse does not trigger flags runtime error", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(err.message || String(err)));

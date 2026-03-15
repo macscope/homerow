@@ -1,8 +1,13 @@
 "use server";
-import { ImapFlow, ImapFlowOptions } from 'imapflow';
-import nodemailer from 'nodemailer';
 import crypto from "node:crypto";
 import { getPool } from './db';
+import {
+  upstreamAppendMessage,
+  upstreamDeleteMessages,
+  upstreamMoveMessages,
+  upstreamSendMessage,
+  upstreamSetFlags,
+} from "./sync-engine-client";
 
 export type MessageSyncStatus = "staged" | "imap_syncing" | "imap_synced" | "sync_error";
 
@@ -112,22 +117,6 @@ export interface ReceivedEmailAttachment {
   contentType?: string;
   sizeBytes?: number;
 }
-
-// IMAP config is retained for write operations only
-const getImapConfig = (): ImapFlowOptions => {
-  const port = parseInt(process.env.IMAP_PORT || '993');
-  return {
-    host: process.env.IMAP_HOST || '127.0.0.1',
-    port,
-    secure: process.env.IMAP_TLS === 'true',
-    auth: { 
-      user: process.env.ADMIN_EMAIL || 'admin@local', 
-      pass: process.env.ADMIN_PASSWORD || 'password' 
-    },
-    tls: { rejectUnauthorized: false },
-    logger: false
-  };
-};
 
 const CURRENT_USER = process.env.ADMIN_EMAIL || 'admin@local';
 const DEFAULT_SENDER_NAME = "Me";
@@ -380,20 +369,9 @@ async function deleteMessagesFromDbByUids(folderPath: string, uids: number[]): P
 async function permanentlyDeleteUids(folderPath: string, uids: number[]): Promise<void> {
   if (!uids.length) return;
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(folderPath);
-      try {
-        await client.messageDelete(uids.join(","), { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamDeleteMessages(folderPath, uids);
   } catch (err) {
-    console.error("[IMAP Error] permanentlyDeleteUids:", err);
+    console.error("[Sync Engine Error] permanentlyDeleteUids:", err);
   }
   await deleteMessagesFromDbByUids(folderPath, uids);
 }
@@ -2223,9 +2201,8 @@ export async function deleteContact(contactId: string): Promise<void> {
 }
 
 // =============================================================================
-// WRITE OPERATIONS — still go through IMAP so changes propagate upstream.
-// NOTE: seq values are now IMAP UIDs (from the DB), so all operations use
-// { uid: true } to tell ImapFlow to interpret the range as UIDs.
+// WRITE OPERATIONS — delegated to sync-engine's localhost API so the webmail
+// service no longer needs direct IMAP/SMTP access.
 // =============================================================================
 
 export async function markAsRead(seq: string, folder = "INBOX"): Promise<void> {
@@ -2258,20 +2235,9 @@ export async function markAsRead(seq: string, folder = "INBOX"): Promise<void> {
 
   // Also update via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(path);
-      try {
-        await client.messageFlagsAdd(seq, ["\\Seen"], { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamSetFlags(path, [uid], ["\\Seen"], "add");
   } catch (err) {
-    console.error("[IMAP Error] markAsRead:", err);
+    console.error("[Sync Engine Error] markAsRead:", err);
   }
 }
 
@@ -2304,20 +2270,9 @@ export async function markAsUnread(seq: string, folder = "INBOX"): Promise<void>
 
   // Also update via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(path);
-      try {
-        await client.messageFlagsRemove(seq, ["\\Seen"], { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamSetFlags(path, [uid], ["\\Seen"], "remove");
   } catch (err) {
-    console.error("[IMAP Error] markAsUnread:", err);
+    console.error("[Sync Engine Error] markAsUnread:", err);
   }
 }
 
@@ -2356,24 +2311,9 @@ export async function toggleStar(seq: string, starred: boolean, folder = "INBOX"
 
   // Also update via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(path);
-      try {
-        if (starred) {
-          await client.messageFlagsAdd(seq, ["\\Flagged"], { uid: true });
-        } else {
-          await client.messageFlagsRemove(seq, ["\\Flagged"], { uid: true });
-        }
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamSetFlags(path, [uid], ["\\Flagged"], starred ? "add" : "remove");
   } catch (err) {
-    console.error("[IMAP Error] toggleStar:", err);
+    console.error("[Sync Engine Error] toggleStar:", err);
   }
 }
 
@@ -2439,25 +2379,9 @@ export async function deleteEmail(seq: string, currentFolder = "INBOX"): Promise
 
   // Move to Trash via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(sourcePath);
-      try {
-        const mailboxes = await client.list();
-        const trashExists = mailboxes.some(m => m.path === targetPath);
-        if (!trashExists) {
-          await client.mailboxCreate(targetPath);
-        }
-        await client.messageMove(seq, targetPath, { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamMoveMessages(sourcePath, targetPath, [uid]);
   } catch (err) {
-    console.error("[IMAP Error] deleteEmail:", err);
+    console.error("[Sync Engine Error] deleteEmail:", err);
   }
 }
 
@@ -2524,25 +2448,9 @@ export async function deleteEmailsBatch(seqs: string[], currentFolder = "INBOX")
 
   // Move to Trash via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(sourcePath);
-      try {
-        const mailboxes = await client.list();
-        const trashExists = mailboxes.some(m => m.path === targetPath);
-        if (!trashExists) {
-          await client.mailboxCreate(targetPath);
-        }
-        await client.messageMove(seqs.join(","), targetPath, { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamMoveMessages(sourcePath, targetPath, uids);
   } catch (err) {
-    console.error("[IMAP Error] deleteEmailsBatch:", err);
+    console.error("[Sync Engine Error] deleteEmailsBatch:", err);
   }
 }
 
@@ -2594,25 +2502,9 @@ export async function archiveEmails(seqs: string[], currentFolder = "INBOX"): Pr
 
   // Move to Archive via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(sourcePath);
-      try {
-        const mailboxes = await client.list();
-        const archiveExists = mailboxes.some(m => m.path === "Archive");
-        if (!archiveExists) {
-          await client.mailboxCreate("Archive");
-        }
-        await client.messageMove(seqs.join(","), "Archive", { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamMoveMessages(sourcePath, targetPath, uids);
   } catch (err) {
-    console.error("[IMAP Error] archiveEmails:", err);
+    console.error("[Sync Engine Error] archiveEmails:", err);
   }
 }
 
@@ -2639,20 +2531,9 @@ export async function addEmailLabel(seq: string, label: string, folder = "INBOX"
 
   // Also update via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(path);
-      try {
-        await client.messageFlagsAdd(seq, [label], { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamSetFlags(path, [uid], [label], "add");
   } catch (err) {
-    console.error("[IMAP Error] addEmailLabel:", err);
+    console.error("[Sync Engine Error] addEmailLabel:", err);
   }
 }
 
@@ -2678,20 +2559,9 @@ export async function removeEmailLabel(seq: string, label: string, folder = "INB
 
   // Also update via IMAP for upstream sync
   try {
-    const client = new ImapFlow(getImapConfig());
-    await client.connect();
-    try {
-      const lock = await client.getMailboxLock(path);
-      try {
-        await client.messageFlagsRemove(seq, [label], { uid: true });
-      } finally {
-        lock.release();
-      }
-    } finally {
-      await client.logout();
-    }
+    await upstreamSetFlags(path, [uid], [label], "remove");
   } catch (err) {
-    console.error("[IMAP Error] removeEmailLabel:", err);
+    console.error("[Sync Engine Error] removeEmailLabel:", err);
   }
 }
 
@@ -2921,18 +2791,6 @@ async function sendEmailNow(
   threading?: { inReplyTo?: string; references?: string[] },
   fromName?: string,
 ): Promise<void> {
-  const port = parseInt(process.env.SMTP_PORT || '465');
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || '127.0.0.1',
-    port,
-    secure: process.env.SMTP_SECURE === 'true' || port === 465,
-    auth: { 
-      user: process.env.ADMIN_EMAIL || 'admin@local', 
-      pass: process.env.ADMIN_PASSWORD || 'password' 
-    },
-    tls: { rejectUnauthorized: false }
-  });
-
   const isHtml = body.trimStart().startsWith("<");
   const { html: normalizedHtmlBody, inlineAttachments } = isHtml
     ? extractInlineDataImageAttachments(body)
@@ -2953,48 +2811,33 @@ async function sendEmailNow(
   const senderDisplayName = await resolveCurrentUserDisplayName(fromName);
 
   const mergedAttachments = [...(attachments ?? []), ...inlineAttachments];
-  const nodemailerAttachments = mergedAttachments.map((att) => ({
-    filename: att.filename,
-    content: Buffer.from(att.content, "base64"),
-    contentType: att.contentType,
-    ...(att.cid ? { cid: att.cid } : {}),
-    ...(att.contentDisposition ? { contentDisposition: att.contentDisposition } : {}),
-  }));
-
-  await transporter.sendMail({
+  await upstreamSendMessage({
     from: { name: senderDisplayName, address: CURRENT_USER },
     to,
     subject,
-    date,
+    text: plainText,
+    date: date.toISOString(),
     messageId,
     ...(inReplyTo ? { inReplyTo } : {}),
-    ...(references.length ? { references: references.join(" ") } : {}),
-    text: plainText,
+    ...(references.length ? { references } : {}),
     ...(cc ? { cc } : {}),
     ...(bcc ? { bcc } : {}),
     ...(isHtml ? { html: normalizedHtmlBody } : {}),
-    ...(nodemailerAttachments?.length ? { attachments: nodemailerAttachments } : {}),
+    ...(mergedAttachments.length ? { attachments: mergedAttachments } : {}),
   });
 
   // Persist a copy in Sent for providers that don't auto-save SMTP messages.
   const sentPath = await resolveFolderPath("Sent");
-  const client = new ImapFlow(getImapConfig());
   try {
-    await client.connect();
-    const mailboxes = await client.list();
-    const sentExists = mailboxes.some((m) => m.path === sentPath);
-    if (!sentExists) {
-      await client.mailboxCreate(sentPath);
-    }
     const rawMessage = buildRawHtmlMessage(to, subject, normalizedHtmlBody, senderDisplayName, cc, bcc, {
       date,
       messageId,
       inReplyTo,
       references,
     });
-    const appendResult = await client.append(sentPath, Buffer.from(rawMessage), ["\\Seen"]);
+    const appendResult = await upstreamAppendMessage(sentPath, rawMessage, ["\\Seen"]);
     await ensureFolderEntry(sentPath, "Sent", "\\Sent");
-    if (appendResult?.uid) {
+    if (appendResult?.uid != null) {
       await upsertLocalMessageCopy({
         folderPath: sentPath,
         folderName: "Sent",
@@ -3008,7 +2851,7 @@ async function sendEmailNow(
         cc,
         bcc,
         flags: ["\\Seen"],
-        hasAttachments: nodemailerAttachments.length > 0,
+        hasAttachments: mergedAttachments.length > 0,
         messageId,
         inReplyTo,
         references,
@@ -3016,9 +2859,7 @@ async function sendEmailNow(
       });
     }
   } catch (err) {
-    console.error("[IMAP Error] sendEmail append to Sent:", err);
-  } finally {
-    await client.logout();
+    console.error("[Sync Engine Error] sendEmail append to Sent:", err);
   }
 }
 
@@ -3272,18 +3113,11 @@ export async function saveDraft(to: string, subject: string, body: string, cc?: 
   const draftsPath = await resolveFolderPath("Drafts");
   const isHtml = body.trimStart().startsWith("<");
   const plainText = isHtml ? htmlToPlainText(body) : body;
-  const client = new ImapFlow(getImapConfig());
-  await client.connect();
   try {
-    const mailboxes = await client.list();
-    const draftsExists = mailboxes.some(m => m.path === draftsPath);
-    if (!draftsExists) {
-      await client.mailboxCreate(draftsPath);
-    }
     const rawMessage = buildRawHtmlMessage(to, subject, body, cc, bcc);
-    const appendResult = await client.append(draftsPath, Buffer.from(rawMessage), ["\\Draft", "\\Seen"]);
+    const appendResult = await upstreamAppendMessage(draftsPath, rawMessage, ["\\Draft", "\\Seen"]);
     await ensureFolderEntry(draftsPath, "Drafts", "\\Drafts");
-    if (appendResult?.uid) {
+    if (appendResult?.uid != null) {
       await upsertLocalMessageCopy({
         folderPath: draftsPath,
         folderName: "Drafts",
@@ -3299,27 +3133,20 @@ export async function saveDraft(to: string, subject: string, body: string, cc?: 
         hasAttachments: false,
       });
     }
-  } finally {
-    await client.logout();
+  } catch (err) {
+    console.error("[Sync Engine Error] saveDraft:", err);
+    throw err;
   }
 }
 
 export async function deleteDraft(seq: string): Promise<void> {
   const draftsPath = await resolveFolderPath("Drafts");
-  const client = new ImapFlow(getImapConfig());
-  await client.connect();
   try {
-    const lock = await client.getMailboxLock(draftsPath);
-    try {
-      await client.messageFlagsAdd(seq, ["\\Deleted"], { uid: true });
-      await client.messageDelete(seq, { uid: true });
-    } finally {
-      lock.release();
-    }
+    const uid = parseInt(seq, 10);
+    if (!Number.isFinite(uid)) return;
+    await upstreamDeleteMessages(draftsPath, [uid]);
   } catch {
     // Drafts folder may not exist yet
-  } finally {
-    await client.logout();
   }
 }
 
@@ -3446,22 +3273,11 @@ export async function moveToFolder(seq: string, fromFolder: string, toFolder: st
     return;
   }
 
-  const client = new ImapFlow(getImapConfig());
-  await client.connect();
   try {
-    const lock = await client.getMailboxLock(sourcePath);
-    try {
-      const mailboxes = await client.list();
-      const targetExists = mailboxes.some(m => m.path === targetPath);
-      if (!targetExists) {
-        await client.mailboxCreate(targetPath);
-      }
-      await client.messageMove(seq, targetPath, { uid: true });
-    } finally {
-      lock.release();
-    }
-  } finally {
-    await client.logout();
+    await upstreamMoveMessages(sourcePath, targetPath, [uid]);
+  } catch (err) {
+    console.error("[Sync Engine Error] moveToFolder:", err);
+    throw err;
   }
   await persistDerivedSpamScoreIfMissing(targetPath, uid);
   await emitFolderSyncedEvent(sourcePath);

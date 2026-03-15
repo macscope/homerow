@@ -3,6 +3,19 @@ let
   settings = import ./settings.nix;
   webmailSubdomain = settings.webmailSubdomain or "webmail";
   webmailHost = "${webmailSubdomain}.${settings.domain}";
+  mailProviderMode = settings.mailProviderMode or "local";
+  upstreamImapHost = settings.upstreamImapHost or "127.0.0.1";
+  upstreamImapPort = settings.upstreamImapPort or 993;
+  upstreamImapTls = settings.upstreamImapTls or true;
+  upstreamImapUser = settings.upstreamImapUser or settings.email;
+  upstreamImapPassword = settings.upstreamImapPassword or settings.imapPassword;
+  upstreamSmtpHost = settings.upstreamSmtpHost or "127.0.0.1";
+  upstreamSmtpPort = settings.upstreamSmtpPort or 465;
+  upstreamSmtpSecure = settings.upstreamSmtpSecure or true;
+  upstreamSmtpUser = settings.upstreamSmtpUser or settings.email;
+  upstreamSmtpPassword = settings.upstreamSmtpPassword or settings.imapPassword;
+  syncEngineApiPort = 4001;
+  syncEngineApiUrl = "http://127.0.0.1:${toString syncEngineApiPort}";
 
   customWebmailApp = pkgs.buildNpmPackage {
     pname = "custom-webmail";
@@ -32,26 +45,28 @@ let
     DB_USER = "mailsync";
     DB_PASSWORD = "${settings.imapPassword}";
 
-    # Mail Server Settings
-    IMAP_HOST = "127.0.0.1";
-    IMAP_PORT = "993";
-    IMAP_TLS = "true";
+    # Upstream mailbox settings (local Dovecot by default, external provider in BYO mode).
+    IMAP_HOST = upstreamImapHost;
+    IMAP_PORT = toString upstreamImapPort;
+    IMAP_TLS = lib.boolToString upstreamImapTls;
 
-    SMTP_HOST = "127.0.0.1";
-    SMTP_PORT = "465";
-    SMTP_SECURE = "true";
+    SMTP_HOST = upstreamSmtpHost;
+    SMTP_PORT = toString upstreamSmtpPort;
+    SMTP_SECURE = lib.boolToString upstreamSmtpSecure;
 
-    # Explicitly set the user to the full email address
-    # We provide multiple common keys to catch whatever the app is looking for
+    # The mailbox identity stays tied to EMAIL, while IMAP/SMTP auth can target
+    # provider-specific usernames for external mail providers.
     ADMIN_EMAIL = "${settings.email}";
-    SMTP_USER = "${settings.email}";
-    IMAP_USER = "${settings.email}";
+    SMTP_USER = upstreamSmtpUser;
+    IMAP_USER = upstreamImapUser;
     USER_EMAIL = "${settings.email}";
 
-    # Use the plain text password from our automated setup
+    # MAIL_PASSWORD remains the webmail login/internal service secret.
     ADMIN_PASSWORD = "${settings.imapPassword}";
-    SMTP_PASS = "${settings.imapPassword}";
-    IMAP_PASS = "${settings.imapPassword}";
+    SMTP_PASS = upstreamSmtpPassword;
+    IMAP_PASS = upstreamImapPassword;
+    SYNC_ENGINE_URL = syncEngineApiUrl;
+    SYNC_ENGINE_API_TOKEN = "${settings.imapPassword}";
 
     AVATAR_STORAGE_DIR = "/var/lib/custom-webmail/avatars";
     TAKEOUT_IMPORT_DIR = "/var/lib/custom-webmail/takeout-imports";
@@ -60,7 +75,7 @@ let
   mkWebmailService = slot: port: {
     description = "Custom SolidStart Webmail (${slot})";
     wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" "dovecot2.service" "postfix.service" ];
+    after = [ "network.target" ] ++ lib.optionals (mailProviderMode == "local") [ "dovecot2.service" "postfix.service" ];
 
     environment = commonEnvironment // {
       PORT = toString port;

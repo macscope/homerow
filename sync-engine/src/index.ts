@@ -15,6 +15,7 @@ import { initDb, migrateDb, shutdownDb, query, queryOne } from './db.js';
 import { log } from './logger.js';
 import { runBackfill } from './backfill.js';
 import { IdleListener } from './idle-listener.js';
+import { startInternalApiServer, type InternalApiServer } from './internal-api.js';
 import { RateLimitedQueue } from './queue.js';
 
 // ---------------------------------------------------------------------------
@@ -23,6 +24,7 @@ import { RateLimitedQueue } from './queue.js';
 
 let shuttingDown = false;
 let idleListener: IdleListener | null = null;
+let internalApiServer: InternalApiServer | null = null;
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -32,6 +34,11 @@ async function shutdown(signal: string): Promise<void> {
 
   if (idleListener) {
     await idleListener.stop();
+  }
+
+  if (internalApiServer) {
+    await internalApiServer.close().catch(() => undefined);
+    internalApiServer = null;
   }
 
   await shutdownDb();
@@ -63,9 +70,13 @@ async function main(): Promise<void> {
   // 2b. Auto-migrate schema if needed
   await migrateDb();
 
+  // 2c. Expose a localhost-only API for upstream write operations so the
+  // webmail app no longer needs to connect to IMAP/SMTP directly.
+  internalApiServer = startInternalApiServer(config);
+
   // 3. Ensure account exists in DB
   const accountId = await ensureAccount(config);
-  log.info('Account ready', { accountId, email: config.imap.user });
+  log.info('Account ready', { accountId, email: config.account.email });
 
   // 4. Create rate-limited queue for IMAP operations
   const queue = new RateLimitedQueue(config.maxConcurrentImap);
@@ -124,10 +135,36 @@ async function ensureAccount(config: ReturnType<typeof loadConfig>): Promise<str
   // Try to find existing account
   const existing = await queryOne<{ id: string }>(
     `SELECT id FROM accounts WHERE email = $1`,
-    [config.imap.user],
+    [config.account.email],
   );
 
-  if (existing) return existing.id;
+  if (existing) {
+    await query(
+      `UPDATE accounts
+       SET display_name = $2,
+           imap_host = $3,
+           imap_port = $4,
+           imap_tls = $5,
+           smtp_host = $6,
+           smtp_port = $7,
+           username = $8,
+           password = $9,
+           updated_at = now()
+       WHERE id = $1`,
+      [
+        existing.id,
+        config.account.email.split('@')[0],
+        config.imap.host,
+        config.imap.port,
+        config.imap.tls,
+        config.smtp.host,
+        config.smtp.port,
+        config.imap.user,
+        config.imap.pass,
+      ],
+    );
+    return existing.id;
+  }
 
   // Create new account
   const result = await queryOne<{ id: string }>(
@@ -135,8 +172,8 @@ async function ensureAccount(config: ReturnType<typeof loadConfig>): Promise<str
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
-      config.imap.user,
-      config.imap.user.split('@')[0],
+      config.account.email,
+      config.account.email.split('@')[0],
       config.imap.host,
       config.imap.port,
       config.imap.tls,
@@ -149,7 +186,7 @@ async function ensureAccount(config: ReturnType<typeof loadConfig>): Promise<str
 
   if (!result) throw new Error('Failed to create account');
 
-  log.info('Created new account', { id: result.id, email: config.imap.user });
+  log.info('Created new account', { id: result.id, email: config.account.email });
   return result.id;
 }
 

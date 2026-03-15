@@ -1980,7 +1980,6 @@ export default function Home() {
             <Show when={labelsState.activeFilter}>
               <button
                 onClick={() => {
-                  setActiveFilter(null);
                   void navigate("/");
                 }}
                 class="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium text-[var(--text-secondary)] bg-[var(--search-bg)] hover:bg-[var(--hover-bg)] border-none cursor-pointer transition-colors"
@@ -2046,7 +2045,6 @@ export default function Home() {
                           return;
                         }
                         const nextFilter = tab.key === PRIMARY_CATEGORY_KEY ? null : tab.filterId;
-                        setActiveFilter(nextFilter);
                         void navigate(nextFilter ? `/?filter=${encodeURIComponent(nextFilter)}` : "/");
                       }}
                     >

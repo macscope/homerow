@@ -22,6 +22,15 @@
     let
       systems = [ "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      deploySettings =
+        if builtins.pathExists ./modules/settings.nix
+        then import ./modules/settings.nix
+        else {};
+      mailProviderMode = deploySettings.mailProviderMode or "local";
+      mailModules = nixpkgs.lib.optionals (mailProviderMode == "local") [
+        simple-nixos-mailserver.nixosModule
+        ./modules/mail.nix
+      ];
     in {
 
       # --- 1. Local Development Environment (macOS & Linux) ---
@@ -66,15 +75,17 @@
       # --- 3. Production Mail Server Configuration (Linux Server) ---
       nixosConfigurations.mailserver = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        modules = [
-          disko.nixosModules.disko
-          simple-nixos-mailserver.nixosModule
-          ./modules/disk-config.nix
-          ./modules/configuration.nix
-          ./modules/mail.nix
-          ./modules/backup.nix
-          ./modules/sync-engine.nix
-        ];
+        modules =
+          [
+            disko.nixosModules.disko
+            ./modules/disk-config.nix
+            ./modules/configuration.nix
+          ]
+          ++ mailModules
+          ++ [
+            ./modules/backup.nix
+            ./modules/sync-engine.nix
+          ];
       };
     };
 }

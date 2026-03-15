@@ -1,6 +1,5 @@
 "use server";
 
-import { ImapFlow } from "imapflow";
 import fs from "node:fs";
 import path from "node:path";
 import { appendFile, unlink } from "node:fs/promises";
@@ -11,6 +10,7 @@ import { createInterface } from "node:readline";
 import tar from "tar-stream";
 import PostalMime from "postal-mime";
 import { getPool } from "~/lib/db";
+import { upstreamAppendMessage } from "~/lib/sync-engine-client";
 import { parseTakeoutBlockedAddressesJson } from "~/lib/takeout-blocked-addresses";
 import {
   beginTakeoutImportEstimation,
@@ -584,16 +584,37 @@ function saveCheckpointMeta(tgzPath: string, imported: Set<string>): void {
   fs.writeFileSync(checkpointMetaPathForArchive(tgzPath), JSON.stringify(checkpoint));
 }
 
-function getImapConfig() {
+interface TakeoutMailboxConfig {
+  accountEmail: string;
+  host: string;
+  port: number;
+  smtpHost: string;
+  smtpPort: number;
+  imapUser: string;
+  pass: string;
+  tls: boolean;
+}
+
+function getMailboxConfig(): TakeoutMailboxConfig {
   const config = loadConfigEnv();
   const host = process.env.IMAP_HOST || "127.0.0.1";
   const port = Number.parseInt(process.env.IMAP_PORT || "3143", 10);
-  const user = process.env.IMAP_USER || config.EMAIL || "";
+  const smtpHost = process.env.SMTP_HOST || host;
+  const smtpPort = Number.parseInt(process.env.SMTP_PORT || "587", 10);
+  const accountEmail =
+    process.env.USER_EMAIL ||
+    process.env.ADMIN_EMAIL ||
+    config.EMAIL ||
+    process.env.IMAP_USER ||
+    "";
+  const imapUser = process.env.IMAP_USER || accountEmail;
   const pass = process.env.IMAP_PASS || config.MAIL_PASSWORD || "";
   const tls = process.env.IMAP_TLS === "true";
 
-  if (!user || !pass) throw new Error("Missing IMAP credentials for takeout import.");
-  return { host, port, user, pass, tls };
+  if (!accountEmail || !imapUser || !pass) {
+    throw new Error("Missing mailbox credentials for takeout import.");
+  }
+  return { accountEmail, host, port, smtpHost, smtpPort, imapUser, pass, tls };
 }
 
 function guessSpecialUse(pathValue: string): string | null {
@@ -700,6 +721,9 @@ async function ensureImportAccount(params: {
   host: string;
   port: number;
   tls: boolean;
+  smtpHost: string;
+  smtpPort: number;
+  username: string;
   password: string;
 }): Promise<string> {
   const pool = getPool();
@@ -713,7 +737,7 @@ async function ensureImportAccount(params: {
     `INSERT INTO accounts (
        email, display_name, imap_host, imap_port, imap_tls,
        smtp_host, smtp_port, username, password
-     ) VALUES ($1, $2, $3, $4, $5, $3, 587, $1, $6)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       params.email,
@@ -721,6 +745,9 @@ async function ensureImportAccount(params: {
       params.host,
       params.port,
       params.tls,
+      params.smtpHost,
+      params.smtpPort,
+      params.username,
       params.password,
     ],
   );
@@ -1019,38 +1046,6 @@ async function markStagedMessageImapSynced(params: {
   );
 }
 
-interface ImportImapClient {
-  imap: ImapFlow;
-  createdFolders: Set<string>;
-}
-
-async function createImportImapClient(config: ReturnType<typeof getImapConfig>): Promise<ImportImapClient> {
-  const imap = new ImapFlow({
-    host: config.host,
-    port: config.port,
-    secure: config.tls,
-    auth: { user: config.user, pass: config.pass },
-    tls: { rejectUnauthorized: false },
-    logger: false,
-  });
-
-  await imap.connect();
-  const createdFolders = new Set<string>();
-  const mailboxes = await imap.list();
-  for (const mb of mailboxes) createdFolders.add(mb.path);
-  return { imap, createdFolders };
-}
-
-async function ensureClientFolder(client: ImportImapClient, folder: string): Promise<void> {
-  if (client.createdFolders.has(folder)) return;
-  try {
-    await client.imap.mailboxCreate(folder);
-  } catch {
-    // Folder might already exist, including when created by another client.
-  }
-  client.createdFolders.add(folder);
-}
-
 async function importTakeoutArchive(options: {
   tgzPath: string;
   maxImapAppendConcurrency: number;
@@ -1062,8 +1057,17 @@ async function importTakeoutArchive(options: {
   if (!fs.existsSync(options.tgzPath)) throw new Error(`Takeout file not found: ${options.tgzPath}`);
 
   const importedMessageIds = loadCheckpoint(options.tgzPath);
-  const { host, port, user, pass, tls } = getImapConfig();
-  const accountId = await ensureImportAccount({ email: user, host, port, tls, password: pass });
+  const mailboxConfig = getMailboxConfig();
+  const accountId = await ensureImportAccount({
+    email: mailboxConfig.accountEmail,
+    host: mailboxConfig.host,
+    port: mailboxConfig.port,
+    tls: mailboxConfig.tls,
+    smtpHost: mailboxConfig.smtpHost,
+    smtpPort: mailboxConfig.smtpPort,
+    username: mailboxConfig.imapUser,
+    password: mailboxConfig.pass,
+  });
   const folderIdCache = new Map<string, string>();
   const tempUidCache = new Map<string, number>();
   const progress: ImportProgress = {
@@ -1140,11 +1144,11 @@ async function importTakeoutArchive(options: {
         }
       }
 
-        const messageId = extractMessageId(rawMessage);
-        const takeoutHash = computeTakeoutHash(rawMessage);
-        if (messageId && importedMessageIds.has(messageId)) {
-          onMessageProcessed("skipped");
-        } else {
+      const messageId = extractMessageId(rawMessage);
+      const takeoutHash = computeTakeoutHash(rawMessage);
+      if (messageId && importedMessageIds.has(messageId)) {
+        onMessageProcessed("skipped");
+      } else {
         const labels = extractGmailLabels(rawMessage);
         const { folder, flags } = resolveLabels(labels, options.labelPreferences);
         if (!folder) {
@@ -1188,13 +1192,8 @@ async function importTakeoutArchive(options: {
   // Phase 2: sync staged rows to IMAP in background.
   const syncPass = async (): Promise<void> => {
     const maxConcurrency = Math.max(1, options.maxImapAppendConcurrency);
-    const clients = await Promise.all(
-      Array.from({ length: maxConcurrency }, () =>
-        createImportImapClient({ host, port, user, pass, tls })),
-    );
     const inFlight = new Set<Promise<void>>();
     let targetConcurrency = Math.min(4, maxConcurrency);
-    let clientIndex = 0;
     let syncAttempts = 0;
     let syncErrors = 0;
 
@@ -1248,19 +1247,19 @@ async function importTakeoutArchive(options: {
         if (!pending) continue;
 
         await waitForSlot();
-        const client = clients[clientIndex % clients.length];
-        clientIndex += 1;
-
         let task!: Promise<void>;
         task = (async () => {
           try {
             const appendTargetFolder = pending.folderPath || folder;
             const appendFlags = pending.flags.filter((flag) => !flag.startsWith("__"));
-            await ensureClientFolder(client, appendTargetFolder);
-            const appendResult = await client.imap.append(appendTargetFolder, rawMessage, appendFlags.length ? appendFlags : flags);
+            const appendResult = await upstreamAppendMessage(
+              appendTargetFolder,
+              rawMessage,
+              appendFlags.length ? appendFlags : flags,
+            );
             await markStagedMessageImapSynced({
               messageRowId: pending.id,
-              accountEmail: user,
+              accountEmail: mailboxConfig.accountEmail,
               imapUid: appendResult?.uid,
             });
             await emitFolderSyncedEvent(appendTargetFolder);
@@ -1285,7 +1284,6 @@ async function importTakeoutArchive(options: {
       if (inFlight.size > 0) await Promise.all(inFlight);
     } finally {
       if (inFlight.size > 0) await Promise.allSettled(inFlight);
-      await Promise.all(clients.map((client) => client.imap.logout().catch(() => undefined)));
     }
   };
 

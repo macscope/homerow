@@ -20,6 +20,28 @@ success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 warn() { echo -e "${RED}[WARN]${NC} $1"; }
 
+validate_bool() {
+    local name="$1"
+    local value="$2"
+
+    case "$value" in
+        true|false)
+            ;;
+        *)
+            error "Invalid ${name}='${value}'. Use 'true' or 'false'."
+            ;;
+    esac
+}
+
+validate_port() {
+    local name="$1"
+    local value="$2"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+        error "Invalid ${name}='${value}'. Use a TCP port between 1 and 65535."
+    fi
+}
+
 STRICT_CONFIG_MODE="${INSTALL_STRICT_CONFIG:-0}"
 INSTALL_CONFIG_FILE="${INSTALL_CONFIG_FILE:-${DEPLOY_CONFIG_FILE:-${REPO_ROOT}/config.env}}"
 
@@ -450,11 +472,6 @@ if [ "${STRICT_CONFIG_MODE}" = "1" ]; then
     fi
 fi
 
-if [ "${INSTALL_ONLY_VALIDATE_CONFIG:-0}" = "1" ]; then
-    log "Configuration validation passed."
-    exit 0
-fi
-
 get_input "DOMAIN" "Enter your domain"
 get_input "MAIL_PASSWORD" "Enter Mail Admin Password"
 get_input "RESTIC_PASSWORD" "Enter Backup Encryption Password"
@@ -468,6 +485,7 @@ HETZNER_OBJECT_STORAGE_LOCATION=${HETZNER_OBJECT_STORAGE_LOCATION:-${S3_LOCATION
 EMAIL=${EMAIL:-"admin@$DOMAIN"}
 ACME_ENV=${ACME_ENV:-"production"}
 WEBMAIL_SUBDOMAIN=${WEBMAIL_SUBDOMAIN:-"webmail"}
+MAIL_PROVIDER_MODE=${MAIL_PROVIDER_MODE:-"local"}
 TF_STATE_STACK=${TF_STATE_STACK:-"hetzner-object-storage"}
 HETZNER_REUSE_EXISTING_SERVER=${HETZNER_REUSE_EXISTING_SERVER:-"true"}
 SEED_INBOX=${SEED_INBOX:-"false"}
@@ -534,6 +552,72 @@ if [ "$WEBMAIL_SUBDOMAIN" = "mail" ]; then
     error "WEBMAIL_SUBDOMAIN='mail' is not supported. Use a different subdomain (for example: webmail)."
 fi
 
+case "${MAIL_PROVIDER_MODE}" in
+    local|external)
+        ;;
+    *)
+        error "Invalid MAIL_PROVIDER_MODE='${MAIL_PROVIDER_MODE}'. Use 'local' or 'external'."
+        ;;
+esac
+
+if [ "${MAIL_PROVIDER_MODE}" = "external" ]; then
+    get_input "UPSTREAM_IMAP_HOST" "Enter upstream IMAP host"
+    get_input "UPSTREAM_SMTP_HOST" "Enter upstream SMTP host"
+fi
+
+if [ -z "${MANAGE_MAIL_DNS:-}" ]; then
+    if [ "${MAIL_PROVIDER_MODE}" = "local" ]; then
+        MANAGE_MAIL_DNS="true"
+    else
+        MANAGE_MAIL_DNS="false"
+    fi
+fi
+validate_bool "MANAGE_MAIL_DNS" "${MANAGE_MAIL_DNS}"
+
+if [ "${MAIL_PROVIDER_MODE}" = "local" ] && [ "${MANAGE_MAIL_DNS}" != "true" ]; then
+    error "MANAGE_MAIL_DNS must stay true when MAIL_PROVIDER_MODE=local."
+fi
+
+UPSTREAM_IMAP_HOST=${UPSTREAM_IMAP_HOST:-""}
+UPSTREAM_IMAP_PORT=${UPSTREAM_IMAP_PORT:-""}
+UPSTREAM_IMAP_TLS=${UPSTREAM_IMAP_TLS:-""}
+UPSTREAM_IMAP_USER=${UPSTREAM_IMAP_USER:-""}
+UPSTREAM_IMAP_PASSWORD=${UPSTREAM_IMAP_PASSWORD:-""}
+UPSTREAM_SMTP_HOST=${UPSTREAM_SMTP_HOST:-""}
+UPSTREAM_SMTP_PORT=${UPSTREAM_SMTP_PORT:-""}
+UPSTREAM_SMTP_SECURE=${UPSTREAM_SMTP_SECURE:-""}
+UPSTREAM_SMTP_USER=${UPSTREAM_SMTP_USER:-""}
+UPSTREAM_SMTP_PASSWORD=${UPSTREAM_SMTP_PASSWORD:-""}
+
+if [ "${MAIL_PROVIDER_MODE}" = "local" ]; then
+    UPSTREAM_IMAP_HOST=${UPSTREAM_IMAP_HOST:-"127.0.0.1"}
+    UPSTREAM_IMAP_PORT=${UPSTREAM_IMAP_PORT:-"993"}
+    UPSTREAM_IMAP_TLS=${UPSTREAM_IMAP_TLS:-"true"}
+    UPSTREAM_IMAP_USER=${UPSTREAM_IMAP_USER:-"${EMAIL}"}
+    UPSTREAM_IMAP_PASSWORD=${UPSTREAM_IMAP_PASSWORD:-"${MAIL_PASSWORD}"}
+    UPSTREAM_SMTP_HOST=${UPSTREAM_SMTP_HOST:-"127.0.0.1"}
+    UPSTREAM_SMTP_PORT=${UPSTREAM_SMTP_PORT:-"465"}
+    UPSTREAM_SMTP_SECURE=${UPSTREAM_SMTP_SECURE:-"true"}
+    UPSTREAM_SMTP_USER=${UPSTREAM_SMTP_USER:-"${EMAIL}"}
+    UPSTREAM_SMTP_PASSWORD=${UPSTREAM_SMTP_PASSWORD:-"${MAIL_PASSWORD}"}
+else
+    [ -n "${UPSTREAM_IMAP_HOST}" ] || error "UPSTREAM_IMAP_HOST is required when MAIL_PROVIDER_MODE=external."
+    [ -n "${UPSTREAM_SMTP_HOST}" ] || error "UPSTREAM_SMTP_HOST is required when MAIL_PROVIDER_MODE=external."
+    UPSTREAM_IMAP_PORT=${UPSTREAM_IMAP_PORT:-"993"}
+    UPSTREAM_IMAP_TLS=${UPSTREAM_IMAP_TLS:-"true"}
+    UPSTREAM_IMAP_USER=${UPSTREAM_IMAP_USER:-"${EMAIL}"}
+    UPSTREAM_IMAP_PASSWORD=${UPSTREAM_IMAP_PASSWORD:-"${MAIL_PASSWORD}"}
+    UPSTREAM_SMTP_PORT=${UPSTREAM_SMTP_PORT:-"587"}
+    UPSTREAM_SMTP_SECURE=${UPSTREAM_SMTP_SECURE:-"false"}
+    UPSTREAM_SMTP_USER=${UPSTREAM_SMTP_USER:-"${UPSTREAM_IMAP_USER}"}
+    UPSTREAM_SMTP_PASSWORD=${UPSTREAM_SMTP_PASSWORD:-"${UPSTREAM_IMAP_PASSWORD}"}
+fi
+
+validate_port "UPSTREAM_IMAP_PORT" "${UPSTREAM_IMAP_PORT}"
+validate_port "UPSTREAM_SMTP_PORT" "${UPSTREAM_SMTP_PORT}"
+validate_bool "UPSTREAM_IMAP_TLS" "${UPSTREAM_IMAP_TLS}"
+validate_bool "UPSTREAM_SMTP_SECURE" "${UPSTREAM_SMTP_SECURE}"
+
 case "${HETZNER_REUSE_EXISTING_SERVER}" in
     true|false)
         ;;
@@ -581,6 +665,11 @@ TF_STATE_PREFIX=${TF_STATE_PREFIX:-"${DOMAIN}"}
 TF_STATE_PREFIX="$(normalize_state_prefix "$TF_STATE_PREFIX")"
 if [ -z "$TF_STATE_PREFIX" ]; then
     error "TF_STATE_PREFIX must not be empty."
+fi
+
+if [ "${INSTALL_ONLY_VALIDATE_CONFIG:-0}" = "1" ]; then
+    log "Configuration validation passed."
+    exit 0
 fi
 
 if [ "$ACME_ENV" = "staging" ]; then
@@ -635,8 +724,20 @@ cat > modules/settings.nix <<EOF
 {
   domain = "${DOMAIN}";
   email = "${EMAIL}";
+  mailProviderMode = "${MAIL_PROVIDER_MODE}";
   hashedPassword = "${HASHED_PASS}";
   imapPassword = "${MAIL_PASSWORD}"; # Added for automated internal service login
+  manageMailDns = ${MANAGE_MAIL_DNS};
+  upstreamImapHost = "${UPSTREAM_IMAP_HOST}";
+  upstreamImapPort = ${UPSTREAM_IMAP_PORT};
+  upstreamImapTls = ${UPSTREAM_IMAP_TLS};
+  upstreamImapUser = "${UPSTREAM_IMAP_USER}";
+  upstreamImapPassword = "${UPSTREAM_IMAP_PASSWORD}";
+  upstreamSmtpHost = "${UPSTREAM_SMTP_HOST}";
+  upstreamSmtpPort = ${UPSTREAM_SMTP_PORT};
+  upstreamSmtpSecure = ${UPSTREAM_SMTP_SECURE};
+  upstreamSmtpUser = "${UPSTREAM_SMTP_USER}";
+  upstreamSmtpPassword = "${UPSTREAM_SMTP_PASSWORD}";
   sshAuthorizedKey = ''
 ${SSH_AUTHORIZED_KEY}
 '';
@@ -730,6 +831,7 @@ domain = "${DOMAIN}"
 cloudflare_token = "${CLOUDFLARE_TOKEN}"
 cloudflare_zone_id = "${CLOUDFLARE_ZONE_ID}"
 webmail_subdomain = "${WEBMAIL_SUBDOMAIN}"
+manage_mail_dns = ${MANAGE_MAIL_DNS}
 EOF
 fi
 
@@ -790,19 +892,22 @@ log "Applying DNS stack: ${DNS_STACK}"
 run_timed_step "terraform init (${DNS_STACK_DIR})" terraform -chdir="$DNS_STACK_DIR" init -input=false -migrate-state -force-copy -backend-config="$TEMP_TF_BACKEND_DNS"
 if [ "$DNS_STACK" = "cloudflare" ]; then
     log "Checking existing Cloudflare DNS records for import..."
-    MAIL_A_RECORD_ID="$(cloudflare_find_record_id "A" "mail.${DOMAIN}")"
     WEBMAIL_A_RECORD_ID="$(cloudflare_find_record_id "A" "${WEBMAIL_SUBDOMAIN}.${DOMAIN}")"
-    RSPAMD_A_RECORD_ID="$(cloudflare_find_record_id "A" "rspamd.${DOMAIN}")"
-    MX_RECORD_ID="$(cloudflare_find_record_id "MX" "${DOMAIN}" "mail.${DOMAIN}")"
-    SPF_RECORD_ID="$(cloudflare_find_record_id "TXT" "${DOMAIN}" "v=spf1 mx a:mail.${DOMAIN} -all")"
-    DMARC_RECORD_ID="$(cloudflare_find_record_id "TXT" "_dmarc.${DOMAIN}" "v=DMARC1; p=quarantine; rua=mailto:admin@${DOMAIN}")"
-
-    if [ -n "$MAIL_A_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.mail_a" "${CLOUDFLARE_ZONE_ID}/${MAIL_A_RECORD_ID}"; fi
     if [ -n "$WEBMAIL_A_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.webmail_a" "${CLOUDFLARE_ZONE_ID}/${WEBMAIL_A_RECORD_ID}"; fi
-    if [ -n "$RSPAMD_A_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.rspamd_a" "${CLOUDFLARE_ZONE_ID}/${RSPAMD_A_RECORD_ID}"; fi
-    if [ -n "$MX_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.mx" "${CLOUDFLARE_ZONE_ID}/${MX_RECORD_ID}"; fi
-    if [ -n "$SPF_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.spf" "${CLOUDFLARE_ZONE_ID}/${SPF_RECORD_ID}"; fi
-    if [ -n "$DMARC_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.dmarc" "${CLOUDFLARE_ZONE_ID}/${DMARC_RECORD_ID}"; fi
+
+    if [ "${MANAGE_MAIL_DNS}" = "true" ]; then
+        MAIL_A_RECORD_ID="$(cloudflare_find_record_id "A" "mail.${DOMAIN}")"
+        RSPAMD_A_RECORD_ID="$(cloudflare_find_record_id "A" "rspamd.${DOMAIN}")"
+        MX_RECORD_ID="$(cloudflare_find_record_id "MX" "${DOMAIN}" "mail.${DOMAIN}")"
+        SPF_RECORD_ID="$(cloudflare_find_record_id "TXT" "${DOMAIN}" "v=spf1 mx a:mail.${DOMAIN} -all")"
+        DMARC_RECORD_ID="$(cloudflare_find_record_id "TXT" "_dmarc.${DOMAIN}" "v=DMARC1; p=quarantine; rua=mailto:admin@${DOMAIN}")"
+
+        if [ -n "$MAIL_A_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.mail_a[0]" "${CLOUDFLARE_ZONE_ID}/${MAIL_A_RECORD_ID}"; fi
+        if [ -n "$RSPAMD_A_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.rspamd_a[0]" "${CLOUDFLARE_ZONE_ID}/${RSPAMD_A_RECORD_ID}"; fi
+        if [ -n "$MX_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.mx[0]" "${CLOUDFLARE_ZONE_ID}/${MX_RECORD_ID}"; fi
+        if [ -n "$SPF_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.spf[0]" "${CLOUDFLARE_ZONE_ID}/${SPF_RECORD_ID}"; fi
+        if [ -n "$DMARC_RECORD_ID" ]; then terraform_import_if_exists "$DNS_STACK_DIR" "cloudflare_record.dmarc[0]" "${CLOUDFLARE_ZONE_ID}/${DMARC_RECORD_ID}"; fi
+    fi
 fi
 run_timed_step "terraform apply (${DNS_STACK_DIR})" terraform -chdir="$DNS_STACK_DIR" apply -auto-approve -var="mail_server_ipv4=${SERVER_IP}"
 
@@ -877,6 +982,10 @@ if [ "$SEED_INBOX" = "true" ]; then
         E2E_BASE_URL="https://${WEBMAIL_SUBDOMAIN}.${DOMAIN}" \
         E2E_EMAIL="${EMAIL}" \
         E2E_PASSWORD="${MAIL_PASSWORD}" \
+        E2E_SMTP_HOST="${UPSTREAM_SMTP_HOST}" \
+        E2E_SMTP_PORT="${UPSTREAM_SMTP_PORT}" \
+        E2E_SMTP_USER="${UPSTREAM_SMTP_USER}" \
+        E2E_SMTP_PASSWORD="${UPSTREAM_SMTP_PASSWORD}" \
         E2E_SEED_COUNT="${SEED_INBOX_COUNT}" \
         E2E_SEED_SKIP_CATEGORY_ASSIGNMENTS="${SEED_SKIP_CATEGORY_ASSIGNMENTS}" \
         npm run seed:e2e
@@ -886,7 +995,12 @@ fi
 success "Deployment/Update Complete!"
 echo "------------------------------------------------"
 echo "Webmail:    https://${WEBMAIL_SUBDOMAIN}.$DOMAIN"
-echo "Rspamd:     https://rspamd.$DOMAIN"
+echo "Mail Mode:  ${MAIL_PROVIDER_MODE}"
+if [ "${MAIL_PROVIDER_MODE}" = "local" ]; then
+  echo "Rspamd:     https://rspamd.$DOMAIN"
+else
+  echo "Upstream:   IMAP ${UPSTREAM_IMAP_HOST}:${UPSTREAM_IMAP_PORT} | SMTP ${UPSTREAM_SMTP_HOST}:${UPSTREAM_SMTP_PORT}"
+fi
 echo "Username:   $EMAIL"
 echo "Backup:     Configured to $BUCKET_URL"
 echo "ACME Env:   $ACME_ENV"

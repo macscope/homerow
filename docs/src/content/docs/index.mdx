@@ -42,7 +42,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 The project has five parts working together:
 
 1. **Infrastructure provisioning** (`infra/`) — creates VPS, DNS records, and backup storage using Terraform.
-2. **Server configuration** (`flake.nix`, `modules/`) — turns the VPS into a NixOS mail host.
+2. **Server configuration** (`flake.nix`, `modules/`) — turns the VPS into a NixOS Homerow host, with an optional bundled mail stack.
 3. **Sync layer** (`sync-engine/`) — keeps mailbox data synchronized into PostgreSQL for fast UI queries.
 4. **Web interface** (`webmail/`) — custom frontend/backend for daily email workflows.
 5. **Deploy orchestration** (`scripts/`) — connects everything into one repeatable flow.

@@ -3,6 +3,14 @@
 // ---------------------------------------------------------------------------
 
 export interface Config {
+  account: {
+    email: string;
+  };
+  api: {
+    host: string;
+    port: number;
+    token: string;
+  };
   db: {
     host: string;
     port: number;
@@ -20,6 +28,7 @@ export interface Config {
   smtp: {
     host: string;
     port: number;
+    secure: boolean;
     user: string;
     pass: string;
   };
@@ -44,26 +53,38 @@ function optional(name: string, fallback: string): string {
 }
 
 export function loadConfig(): Config {
+  const dbPassword = required('DB_PASSWORD');
+  const imapUser = required('IMAP_USER');
+  const imapPass = required('IMAP_PASS');
   return {
+    account: {
+      email: optional('ACCOUNT_EMAIL', imapUser),
+    },
+    api: {
+      host: optional('SYNC_ENGINE_API_HOST', '127.0.0.1'),
+      port: parseInt(optional('SYNC_ENGINE_API_PORT', '4001'), 10),
+      token: optional('SYNC_ENGINE_API_TOKEN', dbPassword),
+    },
     db: {
       host: optional('DB_HOST', '127.0.0.1'),
       port: parseInt(optional('DB_PORT', '5432'), 10),
       database: optional('DB_NAME', 'mailsync'),
       user: optional('DB_USER', 'mailsync'),
-      password: required('DB_PASSWORD'),
+      password: dbPassword,
     },
     imap: {
       host: optional('IMAP_HOST', '127.0.0.1'),
       port: parseInt(optional('IMAP_PORT', '993'), 10),
       tls: optional('IMAP_TLS', 'true') === 'true',
-      user: required('IMAP_USER'),
-      pass: required('IMAP_PASS'),
+      user: imapUser,
+      pass: imapPass,
     },
     smtp: {
       host: optional('SMTP_HOST', '127.0.0.1'),
       port: parseInt(optional('SMTP_PORT', '587'), 10),
-      user: required('IMAP_USER'),  // reuse IMAP credentials
-      pass: required('IMAP_PASS'),
+      secure: optional('SMTP_SECURE', 'false') === 'true',
+      user: optional('SMTP_USER', imapUser),
+      pass: optional('SMTP_PASS', imapPass),
     },
     backfillBatchSize: parseInt(optional('BACKFILL_BATCH_SIZE', '100'), 10),
     maxConcurrentImap: parseInt(optional('MAX_CONCURRENT_IMAP', '5'), 10),

@@ -3,18 +3,27 @@ title: After Deploy
 description: What's ready after a successful deployment and next steps.
 ---
 
-Your deploy finishes with a working mail platform, but first-send deliverability still depends on post-deploy checks.
+Your deploy finishes with a working Homerow environment, but what is available depends on whether you are using the bundled local mail stack or an external IMAP/SMTP provider.
 
 ## What You Already Have
 
 - **Webmail UI** at `https://<WEBMAIL_SUBDOMAIN>.<domain>` (default `https://webmail.<domain>`)
-- **Mail host** at `mail.<domain>` (IMAP/SMTP services)
-- **Rspamd UI** at `https://rspamd.<domain>`
 - **Login credentials**: the `EMAIL` + `MAIL_PASSWORD` from your `config.env`
-- **DNS records**: A, MX, SPF, DMARC created by the infrastructure stack
 - **TLS certificates**: auto-provisioned via ACME/Let's Encrypt
 - **Backups**: scheduled daily encrypted restic backups
 - **Sync engine**: running and syncing mailbox data to PostgreSQL
+
+If you deployed with **`MAIL_PROVIDER_MODE=local`**, you also have:
+
+- **Mail host** at `mail.<domain>` (IMAP/SMTP services)
+- **Rspamd UI** at `https://rspamd.<domain>`
+- **Mail DNS** managed by Terraform when `MANAGE_MAIL_DNS=true`
+
+If you deployed with **`MAIL_PROVIDER_MODE=external`**, Homerow:
+
+- Connects to your upstream IMAP/SMTP provider
+- Does **not** expose its own IMAP server for third-party clients
+- Can leave mail DNS management disabled with `MANAGE_MAIL_DNS=false`
 
 ## Webmail Features
 
@@ -31,21 +40,37 @@ The webmail service includes:
 
 ## Next Steps
 
-1. **Test deliverability** — send a test email to verify SMTP works. If on Hetzner, check the [Hetzner Post-Install Guide](/guides/hetzner-post-install/).
+1. **Verify mailbox access** — log into webmail and confirm the inbox loads and sync is active.
 
-2. **Import existing mail** — if migrating from Gmail, see the [Gmail Migration Guide](/guides/gmail-migration/).
+2. **Choose the right client endpoint**:
+   - In `local` mode, IMAP clients can use `mail.<domain>`.
+   - In `external` mode, IMAP clients must use your provider's server settings, not Homerow.
 
-3. **SSH into your server** for maintenance:
+3. **Test mail flow**:
+   - In `local` mode, send a test email to verify SMTP and deliverability. If on Hetzner, check the [Hetzner Post-Install Guide](/guides/hetzner-post-install/).
+   - In `external` mode, verify the configured `UPSTREAM_IMAP_*` and `UPSTREAM_SMTP_*` credentials work with your provider.
+
+4. **Review DNS ownership**:
+   - `WEBMAIL_SUBDOMAIN.<domain>` is always managed by Homerow.
+   - Mail DNS such as MX/SPF/DMARC is only managed when `MANAGE_MAIL_DNS=true`.
+   - The current Terraform DNS stack does not yet manage every deliverability record, so DKIM selectors and HELO-specific SPF TXT records may still need to be maintained separately.
+
+5. **Import existing mail** — if migrating from Gmail, see the [Gmail Migration Guide](/guides/gmail-migration/).
+
+6. **SSH into your server** for maintenance:
    ```bash
-   ssh -i <path/to/private_key> root@mail.<domain>
+   ssh -i <path/to/private_key> root@<WEBMAIL_SUBDOMAIN>.<domain>
    ```
    If DNS is not propagated yet, connect by IP instead:
    ```bash
    ssh -i <path/to/private_key> root@<server_ip>
    ```
 
-4. **Monitor services** — check systemd service status on the server:
+7. **Monitor services** — check systemd service status on the server:
+   ```bash
+   sudo systemctl status mail-sync-engine custom-webmail-blue custom-webmail-green
+   ```
+   In `local` mode, also check:
    ```bash
    sudo systemctl status postfix dovecot rspamd
-   sudo systemctl status mail-sync-engine custom-webmail-blue custom-webmail-green
    ```
